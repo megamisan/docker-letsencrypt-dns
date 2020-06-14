@@ -4,6 +4,7 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from typing import Any, Dict, List, Optional
@@ -162,6 +163,22 @@ def deploy(dnsrobocert_config: Dict[str, Any], _no_lineage: Any):
     _autocmd(certificate)
     _deploy_hook(certificate)
 
+def _tsig_update(config):
+    with tempfile.NamedTemporaryFile() as f:
+        f.write(
+            ('server %s\nzone %s.\nkey %s %s\nupdate %s %s %d %s %s\nsend\nanswer\nquit\n' %
+            (config['tsig']['server'], config['delegated'], config['tsig']['name'], config['tsig']['hmac'],
+            config['action'], config['name'], config['ttl'] if 'ttl' in config else 60, config['type'], config['content'])
+            ).encode('utf-8')
+        )
+        f.flush()
+        utils.execute(
+            [
+                'bash',
+                '-c',
+                'nsupdate < %s' % (f.name),
+            ]
+        )
 
 def _txt_challenge(
     profile: Dict[str, Any],
@@ -194,10 +211,19 @@ def _txt_challenge(
     if ttl:
         config_dict["ttl"] = ttl
 
-    lexicon_config = ConfigResolver()
-    lexicon_config.with_dict(config_dict)
+    if provider_name == 'tsig':
+        if action == 'create':
+            config_del = config_dict.copy()
+            config_del['action'] = 'delete'
+            config_del['content'] = ''
+            _tsig_update(config_del)
+            config_dict['action'] = 'add'
+        _tsig_update(config_dict)
+    else:
+        lexicon_config = ConfigResolver()
+        lexicon_config.with_dict(config_dict)
 
-    Client(lexicon_config).execute()
+        Client(lexicon_config).execute()
 
 
 def _pfx_export(certificate: Dict[str, Any], lineage_path: str):
